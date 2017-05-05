@@ -1,7 +1,7 @@
 #import scipy.io as sio
 import numpy as np
-import math 
-import matplotlib.pyplot as plt 
+import math
+import matplotlib.pyplot as plt
 import numpy as np
 
 def unpickle(file):
@@ -52,7 +52,7 @@ def conv_layer(pre_layer, filters, moving_step = 1):
     r = np.shape(filters)[0]
     c = np.shape(filters)[1]
     if np.shape(filters[2]) != d:
-        print('dimension dismatch! filter and input layer should have same depth.')
+        print('dimension mismatch! filter and input layer should have same depth.')
     number_of_filters = np.shape(filters)[3]
     new_w = int((w - c + moving_step) / moving_step)
     new_h = int((h - r + moving_step) / moving_step)
@@ -75,3 +75,32 @@ def conv_layer(pre_layer, filters, moving_step = 1):
                     temp1 = temp2
                 post_layer[j, i, k] = temp1
     return post_layer
+
+def fc_layer(x, numOutput, w = None):
+    """
+    Performs a fully connected layer computation and the ReLU activation
+    Inputs:
+        x: NumPy array input
+        numOutput: number of output neurons
+        w: weight matrix
+    Outputs:
+        a: output after activation function
+        w: weight matrix (for backpropagation)
+    """
+    # Flatten the input into a 1D array (column-major order)
+    x = x.flatten('F')
+    
+    # Add the bias term
+    x = np.r_[x, 1]
+    
+    # Check if there is already an input weight matrix before initializing a new one, which is normally distributed with zero mean and unit variance
+    if w is None:
+        w = np.random.randn(x.shape[0], numOutput)
+    
+    # Perform a fully-connected computation
+    z = np.dot(w.T, x)
+    
+    # Run the output through the ReLU activation function
+    a = np.maximum(z, 0)
+    
+    return a, w
