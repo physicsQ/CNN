@@ -4,6 +4,77 @@ import math
 import matplotlib.pyplot as plt
 import numpy as np
 
+# Fix the random state to genereate consistent results
+rng = np.random.RandomState(23)
+
+# A class for defining the structure of a CNN
+class CNN(object):
+    
+    def __init__(self, inputSize = (32, 32, 3), layers = ['C', 'P', 'F', 'S'], convFilters = [(3, 3, 10, 1)], downsample = [2], fcSize = [4096, 10]):
+        """
+        An object class for defining the CNN architecture.
+        
+        Inputs:
+            inputSize: a tuple specifying the width, height, and channels of input picture
+            layers: a list of characters ('C': convolutional, 'P': pooling, 'F': fully-connected, 'S': softmax) describing the architecture of the layers
+            convFilters: a list of tuples specifying the width, height, depth, and stride of each convolutional layer filter. Zero padding is deduced from these parameters to keep the output width and height the same.
+            downsample: a list of ints specifying the downsampling factor of the max pooling operation for each pooling layer
+            fcSize: a list of ints specifying the number of output activations for each fully connected layer and the final softmax layer
+        """
+        self.numLayers = len(layers)
+        self.numConvLayers = layers.count('C')
+        self.numPoolLayers = layers.count('P')
+        self.numFCLayers = layers.count('F') + layers.count('S')
+        
+        self.layers = layers
+        
+        self.createArchitecture(inputSize, convFilters, downsample, fcSize)
+    
+    def createArchitecture(self, inputSize, convFilters, downsample, fcSize):
+        """
+        Find the output sizes for all layers along with other relevant parameters, depending on the layer (weights, biases, stride, zero padding, pooling downsampling factor).
+        """
+        
+        # Initialize list to store input/output sizes for each layer, initial weight filters/matrices in conv and FC layers, and other parameters (convolution stride and zero padding, pooling stride and filter size)
+        self.param = [[inputSize, None]]
+        
+        # Loop through the layers
+        for i in xrange(self.numLayers):
+            
+            # Convolutional layer
+            if self.layers[i] is 'C':
+                filterXDim, filterYDim, numFilters, stride = convFilters.pop(0)
+                weightBound = filterXDim * filterYDim * self.param[-1][0][2]
+                filterShape = [filterXDim, filterYDim, self.param[-1][0][2], numFilters]
+                
+                # Output size, weight filters, bias, stride, zero pad
+                self.param.append([(self.param[-1][0][0], self.param[-1][0][1], numFilters), rng.normal(loc = 0.0, scale = 1.0/weightBound, size = filterShape), np.zeros([numFilters,]), stride, (filterXDim - stride)/2])
+                
+                if not ((filterXDim - stride) % 2 == 0 and (filterYDim - stride) % 2 == 0):
+                    raise ValueError('Filter dimensions and stride length do not allow for zero padding to maintain width and height of input to convoluational layer.')
+            
+            # Pooling layer
+            elif self.layers[i] is 'P':
+                poolSize = downsample.pop(0)
+                
+                # Output size, pooling size
+                self.param.append([(self.param[-1][0][0] / poolSize, self.param[-1][0][1] / poolSize, self.param[-1][0][2]), poolSize])
+                
+                if not (self.param[-1][0][0] % poolSize == 0 and self.param[-1][0][1] % poolSize == 0):
+                    raise ValueError('Pooling sizes do not divide evenly with width and height of input activation.')
+            
+            # FC or Softmax layer
+            elif self.layers[i] is 'F' or 'S':
+                fcIn = self.param[-1][0][0] * self.param[-1][0][1] * self.param[-1][0][2]
+                fcOut = fcSize.pop(0)
+                
+                # Output size, weight matrix, bias
+                self.param.append([(fcOut, 1, 1), rng.normal(loc = 0.0, scale = np.sqrt(1.0 / fcOut), size = [fcIn, fcOut]), rng.normal(loc = 0.0, scale = 1.0, size = [fcOut,])])
+        
+        # Remove the input size
+        self.param.remove(self.param[0])
+        
+
 def unpickle(file):
     '''
     Purpose: --- this function reads the CIFAR-10 data
