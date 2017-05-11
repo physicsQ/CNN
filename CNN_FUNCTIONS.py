@@ -104,6 +104,7 @@ def reshape_batch_data(dic):
     for i in range(0, number_of_pictures):
         for j in range(0,3):
             reshaped_dic['data'][:,:,j,i] = np.reshape(dic['data'][i,j*1024:(j+1)*1024], (32,32))
+            #reshaped_dic['data'][:,:,:,i] = np.reshape(dic['data'][i, :],(32, 32, 3))
     return reshaped_dic
     
 
@@ -117,13 +118,15 @@ def conv_layer(pre_layer, filters, moving_step = 1):
                        with new height = (h - r + moving_step) / moving_step
                        with new depth = number_of_filters
     '''
+    #print(np.shape(pre_layer))
     w = np.shape(pre_layer)[1]
     h = np.shape(pre_layer)[0]
     d = np.shape(pre_layer)[2]
     r = np.shape(filters)[0]
     c = np.shape(filters)[1]
-    if np.shape(filters[2]) != d:
-        print('dimension mismatch! filter and input layer should have same depth.')
+    if np.shape(filters)[2] != d:
+        #print('d of filter:', np.shape(filters))
+        print('dimension dismatch! filter and input layer should have same depth.')
     number_of_filters = np.shape(filters)[3]
     new_w = int((w - c + moving_step) / moving_step)
     new_h = int((h - r + moving_step) / moving_step)
@@ -137,7 +140,7 @@ def conv_layer(pre_layer, filters, moving_step = 1):
                 # first I nedd to "reverse" the filter of each depth layer,
                 # But I don't think that is necessary
                 temp_dot_product = np.multiply(filters[:,:,:,k], pre_layer[j*moving_step:j*moving_step + c, i*moving_step:i*moving_step + r, :])   
-                print(sum(sum(sum(temp_dot_product))))
+                #print(sum(sum(sum(temp_dot_product))))
                 #post_layer[j, i, k] = sum(sum(sum(temp_dot_product)))
                 temp1 = temp_dot_product
                 for p in range(0, d):
