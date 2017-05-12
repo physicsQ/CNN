@@ -21,6 +21,7 @@ class CNN(object):
             downsample: a list of ints specifying the downsampling factor of the max pooling operation for each pooling layer
             fcSize: a list of ints specifying the number of output activations for each fully connected layer and the final softmax layer
         """
+        
         self.numLayers = len(layers)
         self.numConvLayers = layers.count('C')
         self.numPoolLayers = layers.count('P')
@@ -69,11 +70,95 @@ class CNN(object):
                 fcOut = fcSize.pop(0)
                 
                 # Output size, weight matrix, bias
-                self.param.append([(fcOut, 1, 1), rng.normal(loc = 0.0, scale = np.sqrt(1.0 / fcOut), size = [fcIn, fcOut]), rng.normal(loc = 0.0, scale = 1.0, size = [fcOut,])])
+                self.param.append([(fcOut, 1, 1), rng.normal(loc = 0.0, scale = np.sqrt(1.0 / fcOut), size = [fcOut, fcIn]), rng.normal(loc = 0.0, scale = 1.0, size = [fcOut,])])
         
         # Remove the input size
         self.param.remove(self.param[0])
         
+    def feedforward(self, input):
+        """
+        Feedforward through the layers of the CNN, calculating the output activations for each layer.
+        """
+        
+        # Initialize list to store NumPy arrays of output activations
+        self.activations = [None] * (self.numLayers + 1)
+        self.activations[0] = input
+        
+        # Loop forwards through layers in CNN
+        for layerNum in xrange(self.numLayers):
+            if self.layers[layerNum] is 'F' or 'S':
+                self.fcFeedforward(layerNum)
+    
+    def backprop(self, t):
+        """
+        Backpropagate through the layers of the CNN, calculating the weight and bias gradients.
+        """
+        
+        # Initialize list to store NumPy arrays of errors and gradients
+        self.delta = [None] * self.numLayers
+        self.deltaBias = [None] * self.numLayers
+        self.deltaWeight = [None] * self.numLayers
+        
+        # Loop backwards through layers in CNN
+        for layerNum in xrange(1, self.numLayers + 1):
+            if self.layers[-layerNum] is 'F' or 'S':
+                self.fcBackprop(t, layerNum)
+                
+    def fcFeedforward(self, layerNum):
+        """
+        Performs a fully connected layer computation and the ReLU activation
+        Inputs:
+            layerNum: the number of the layer in the CNN
+        Outputs:
+            a: output after activation function
+        """
+        
+        # Weights and biases for current layer
+        w = self.param[layerNum][1]
+        b = self.param[layerNum][2]
+        
+        # Flatten the input activation into a 1D array (column-major order)
+        a = self.activations[layerNum].flatten('F')
+        
+        # ReLU activation for fully-connected layers
+        if self.layers[layerNum] is 'F':
+            a = np.maximum(np.dot(w, a) + b, 0)
+        
+        # Softmax activation for final fully-connected layer
+        elif self.layers[layerNum] is 'S':
+            a = softmax(np.dot(w, a) + b)
+        
+        self.activations[layerNum + 1] = a
+    
+    def fcBackprop(self, t, layerNum):
+        """
+        Backpropagation for fully-connected layers to calculate error gradients
+        Inputs:
+            t: Numpy array of target (used for final softmax layer)
+            layerNum: the number of the layer in the CNN
+        """
+        
+        # Case for the final, softmax layer
+        if self.layers[-layerNum] is 'S':
+            # Cross-entropy error in the output
+            self.delta[-layerNum] = self.activations[-layerNum] - t
+            
+            # Error in the bias is the error in the output of the current layer
+            self.deltaBias[-layerNum] = self.delta[-layerNum]
+            
+            # Error in the weights is the outer product between the input activations and the output error
+            self.deltaWeight[-layerNum] = np.outer(self.delta[-layerNum], self.activations[-layerNum - 1])
+        
+        # Case for normal fully-connected layers
+        elif self.layers[-layerNum] is 'F':
+            # Error in the output is the product between (1) the product between the weight matrix and the output error of the next layer and (2) the derivative of the ReLU activation of the current layer
+            self.delta[-layerNum] = np.multiply(np.dot(self.param[-layerNum + 1][1].T, self.delta[-layerNum + 1]), self.activations[-layerNum] != 0)
+            
+            # Error in the bias is the error in the output of the current layer
+            self.deltaBias[-layerNum] = self.delta[-layerNum]
+            
+            # Error in the weights is the outer product between the input activations and the output error
+            self.deltaWeight[-layerNum] = np.outer(self.activations[-layerNum - 1].flatten('F'), self.delta[-layerNum])
 
 def unpickle(file):
     '''
@@ -150,31 +235,9 @@ def conv_layer(pre_layer, filters, moving_step = 1):
                 post_layer[j, i, k] = temp1
     return post_layer
 
-def fc_layer(x, numOutput, w = None):
-    """
-    Performs a fully connected layer computation and the ReLU activation
-    Inputs:
-        x: NumPy array input
-        numOutput: number of output neurons
-        w: weight matrix
-    Outputs:
-        a: output after activation function
-        w: weight matrix (for backpropagation)
-    """
-    # Flatten the input into a 1D array (column-major order)
-    x = x.flatten('F')
+def softmax(z):
+    """Compute softmax values of each value in a 1 dimensional vector z."""
     
-    # Add the bias term
-    x = np.r_[x, 1]
-    
-    # Check if there is already an input weight matrix before initializing a new one, which is normally distributed with zero mean and unit variance
-    if w is None:
-        w = np.random.randn(x.shape[0], numOutput)
-    
-    # Perform a fully-connected computation
-    z = np.dot(w.T, x)
-    
-    # Run the output through the ReLU activation function
-    a = np.maximum(z, 0)
-    
-    return a, w
+    # Subtract the max for numerical stability
+    e_z = np.exp(z - np.max(z))
+    return e_z / np.sum(e_z)
