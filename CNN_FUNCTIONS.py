@@ -10,7 +10,7 @@ rng = np.random.RandomState(23)
 # A class for defining the structure of a CNN
 class CNN(object):
     
-    def __init__(self, inputSize = (32, 32, 3), layers = ['C', 'P', 'F', 'S'], convFilters = [(3, 10, 1)], downsample = [2], fcSize = [4096, 10]):
+    def __init__(self, inputSize = (3, 32, 32), layers = ['C', 'P', 'F', 'S'], convFilters = [(3, 10, 1)], downsample = [2], fcSize = [4096, 10]):
         """
         An object class for defining the CNN architecture.
         
@@ -45,11 +45,11 @@ class CNN(object):
             # Convolutional layer
             if self.layers[i] is 'C':
                 filterDim, numFilters, stride = convFilters.pop(0)
-                weightBound = filterDim ** 2 * self.param[-1][0][2]
-                filterShape = [numFilters, self.param[-1][0][2], filterDim, filterDim]
+                weightBound = filterDim ** 2 * self.param[-1][0][0]
+                filterShape = [numFilters, self.param[-1][0][0], filterDim, filterDim]
                 
                 # Output size, weight filters, bias, stride, zero pad
-                self.param.append([(self.param[-1][0][0], self.param[-1][0][1], numFilters), rng.normal(loc = 0.0, scale = 1.0/weightBound, size = filterShape), np.zeros([numFilters,]), stride, (filterDim - stride)/2])
+                self.param.append([(filterShape[0], filterShape[2], filterShape[3]), rng.normal(loc = 0.0, scale = 1.0/weightBound, size = filterShape), np.zeros([numFilters,]), stride, (filterDim - stride)/2])
                 
                 if not ((filterDim - stride) % 2 == 0):
                     raise ValueError('Filter dimensions and stride length do not allow for zero padding to maintain width and height of input to convoluational layer.')
@@ -58,10 +58,10 @@ class CNN(object):
             elif self.layers[i] is 'P':
                 poolSize = downsample.pop(0)
                 
-                # Output size, pooling size
-                self.param.append([(self.param[-1][0][0] / poolSize, self.param[-1][0][1] / poolSize, self.param[-1][0][2]), poolSize])
+                # Output size, pooling size, max value index boolean mask
+                self.param.append([(self.param[-1][0][0], self.param[-1][0][1] / poolSize, self.param[-1][0][2] / poolSize), poolSize, 0])
                 
-                if not (self.param[-1][0][0] % poolSize == 0 and self.param[-1][0][1] % poolSize == 0):
+                if not (self.param[-1][0][1] % poolSize == 0 and self.param[-1][0][2] % poolSize == 0):
                     raise ValueError('Pooling sizes do not divide evenly with width and height of input activation.')
             
             # FC or Softmax layer
@@ -70,7 +70,7 @@ class CNN(object):
                 fcOut = fcSize.pop(0)
                 
                 # Output size, weight matrix, bias
-                self.param.append([(fcOut, 1, 1), rng.normal(loc = 0.0, scale = np.sqrt(1.0 / fcIn), size = [fcOut, fcIn]), rng.normal(loc = 0.0, scale = 1.0, size = [fcOut,])])
+                self.param.append([(1, 1, fcOut), rng.normal(loc = 0.0, scale = np.sqrt(1.0 / fcIn), size = [fcOut, fcIn]), rng.normal(loc = 0.0, scale = 1.0, size = [fcOut,])])
         
         # Remove the input size
         self.param.remove(self.param[0])
@@ -86,7 +86,9 @@ class CNN(object):
         
         # Loop forwards through layers in CNN
         for layerNum in xrange(self.numLayers):
-            if self.layers[layerNum] is 'F' or 'S':
+            if self.layers[layerNum] is 'P':
+                self.poolFeedforward(layerNum)
+            elif self.layers[layerNum] is 'F' or 'S':
                 self.fcFeedforward(layerNum)
     
     def backprop(self, t):
@@ -95,14 +97,18 @@ class CNN(object):
         """
         
         # Initialize list to store NumPy arrays of errors and gradients
-        self.delta = [None] * self.numLayers
-        self.deltaBias = [None] * self.numLayers
-        self.deltaWeight = [None] * self.numLayers
+        self.delta = [None] * (self.numLayers + 1)
+        self.deltaBias = [None] * (self.numLayers + 1)
+        self.deltaWeight = [None] * (self.numLayers + 1)
         
         # Loop backwards through layers in CNN
         for layerNum in xrange(1, self.numLayers + 1):
-            if self.layers[-layerNum] is 'F' or 'S':
-                self.fcBackprop(t, layerNum)
+            if self.layers[-layerNum] is 'S':
+                self.fcBackprop(layerNum, t)
+            elif self.layers[-layerNum] is 'F':
+                self.fcBackprop(layerNum)
+            elif self.layers[-layerNum] is 'P':
+                self.poolBackprop(layerNum)
                 
     def fcFeedforward(self, layerNum):
         """
@@ -117,8 +123,8 @@ class CNN(object):
         w = self.param[layerNum][1]
         b = self.param[layerNum][2]
         
-        # Flatten the input activation into a 1D array (column-major order)
-        a = self.activations[layerNum].flatten('F')
+        # Flatten the input activation into a 1D array
+        a = self.activations[layerNum].flatten('C')
         
         # ReLU activation for fully-connected layers
         if self.layers[layerNum] is 'F':
@@ -130,16 +136,16 @@ class CNN(object):
         
         self.activations[layerNum + 1] = a
     
-    def fcBackprop(self, t, layerNum):
+    def fcBackprop(self, layerNum, t = None):
         """
-        Backpropagation for fully-connected layers to calculate error gradients
+        Backpropagation for fully-connected layers to calculate error gradients (delta) at the input
         Inputs:
             t: Numpy array of target (used for final softmax layer)
             layerNum: the number of the layer in the CNN
         """
         
         # Case for the final, softmax layer
-        if self.layers[-layerNum] is 'S':
+        if t is not None:
             # Cross-entropy error in the output
             self.delta[-layerNum] = self.activations[-layerNum] - t
             
@@ -150,7 +156,7 @@ class CNN(object):
             self.deltaWeight[-layerNum] = np.outer(self.delta[-layerNum], self.activations[-layerNum - 1])
         
         # Case for normal fully-connected layers
-        elif self.layers[-layerNum] is 'F':
+        else:
             # Error in the output is the product between (1) the product between the weight matrix and the output error of the next layer and (2) the derivative of the ReLU activation of the current layer
             self.delta[-layerNum] = np.multiply(np.dot(self.param[-layerNum + 1][1].T, self.delta[-layerNum + 1]), self.activations[-layerNum] != 0)
             
@@ -158,7 +164,57 @@ class CNN(object):
             self.deltaBias[-layerNum] = self.delta[-layerNum]
             
             # Error in the weights is the outer product between the input activations and the output error
-            self.deltaWeight[-layerNum] = np.outer(self.activations[-layerNum - 1].flatten('F'), self.delta[-layerNum])
+            self.deltaWeight[-layerNum] = np.outer(self.activations[-layerNum - 1].flatten('C'), self.delta[-layerNum])
+        
+    def poolFeedforward(self, layerNum):
+        """
+        Feedforward for the max pooling layer
+        """
+        # Find the pooling downsampling rate for the current pooling layer
+        poolSize = self.param[layerNum][1]
+        
+        # Find the width/height dimension of the output activation after pooling
+        k = self.activations[layerNum].shape[-1] / poolSize
+        
+        # Find the number of input activation channels
+        depth = self.activations[layerNum].shape[0]
+        
+        # Reshape the input activation in a way to find the max value of each pooling block by finding the max along a certain dimension
+        actReshape = self.activations[layerNum].reshape(depth, k, poolSize, k, poolSize)
+        
+        # Calculate the output activation, a.k.a. find the max values
+        self.activations[layerNum + 1] = actReshape.max(axis = (-1, -3))
+        
+        # Find the indices of the max values in the input activation and represent as a boolean mask. This involves finding the argmax along the rows of the reshaped activation, then finding the argmax along the columns of the max of the reshaped activation. These two argmax calculations are then one-hot encoded to form two boolean masks, and the logical and of these two masks form the boolean mask that encodes the argmax information of the original activation.
+        ind1 = actReshape.argmax(axis = -1)
+        mask1 = np.eye(poolSize, dtype = 'bool')[ind1].flatten('C')
+        
+        ind2 = actReshape.max(axis = -1).argmax(axis = -2)
+        mask2 = np.eye(poolSize, dtype = 'bool')[ind2].swapaxes(-1, -2).flatten('C').repeat(poolSize)
+        
+        # Store the linear indices of the max values from max pooling
+        self.param[layerNum][2] = np.flatnonzero(np.logical_and(mask1, mask2))
+    
+    def poolBackprop(self, layerNum):
+        """
+        Backpropagation for max pooling layer.
+        """
+        # If the following layer is FC, then calculate the input error gradient for that FC layer
+        if self.layers[-layerNum + 1] is 'F':
+            # Flatten input activation for the FC layer
+            self.activations[-layerNum] = self.activations[-layerNum].flatten('C')
+                
+            # Error in the output is the product between (1) the product between the weight matrix and the output error of the next layer and (2) the derivative of the ReLU activation of the current layer
+            self.delta[-layerNum] = np.multiply(np.dot(self.param[-layerNum + 1][1].T, self.delta[-layerNum + 1]), self.activations[-layerNum] != 0)
+        
+        # Initialize array for error at the input with all zeros
+        self.delta[-layerNum - 1] = np.zeros(self.activations[-layerNum - 1].size)
+        
+        # Assign errors at the output to the indices of the max values for the current max pooling layer
+        self.delta[-layerNum - 1][self.param[-layerNum][2]] = self.delta[-layerNum].flatten('C')
+        
+        # Reshape the input error array to the same shape as the input activation
+        self.delta[-layerNum - 1] = np.reshape(self.delta[-layerNum - 1], self.activations[-layerNum - 1].shape)
 
 def unpickle(file):
     '''
