@@ -1,8 +1,5 @@
-#import scipy.io as sio
 import numpy as np
-import math
 import matplotlib.pyplot as plt
-import numpy as np
 
 # Fix the random state to genereate consistent results
 rng = np.random.RandomState(23)
@@ -15,7 +12,7 @@ class CNN(object):
         An object class for defining the CNN architecture.
         
         Inputs:
-            inputSize: a tuple specifying the width, height, and channels of input picture
+            inputSize: a tuple specifying the channels, width, and height of the input picture
             layers: a list of characters ('C': convolutional, 'P': pooling, 'F': fully-connected, 'S': softmax) describing the architecture of the layers
             convFilters: a list of tuples specifying the width/height, depth, and stride of each convolutional layer filter. Zero padding is deduced from these parameters to keep the output width and height the same.
             downsample: a list of ints specifying the downsampling factor of the max pooling operation for each pooling layer
@@ -35,7 +32,6 @@ class CNN(object):
         """
         Find the output sizes for all layers along with other relevant parameters, depending on the layer (weights, biases, stride, zero padding, pooling downsampling factor).
         """
-        
         # Initialize list to store input/output sizes for each layer, initial weight filters/matrices in conv and FC layers, and other parameters (convolution stride and zero padding, pooling stride and filter size)
         self.param = [[inputSize, None]]
         
@@ -79,7 +75,6 @@ class CNN(object):
         """
         Feedforward through the layers of the CNN, calculating the output activations for each layer.
         """
-        
         # Initialize list to store NumPy arrays of output activations
         self.activations = [None] * (self.numLayers + 1)
         self.activations[0] = input
@@ -93,10 +88,9 @@ class CNN(object):
     
     def backprop(self, t):
         """
-        Backpropagate through the layers of the CNN, calculating the weight and bias gradients.
+        Backpropagate through the layers of the CNN, calculating the error gradients and errors for other parameters specific to each layer. Input t is the one-hot encoded truth label for a given input image.
         """
-        
-        # Initialize list to store NumPy arrays of errors and gradients
+        # Initialize list to store NumPy arrays of errors
         self.delta = [None] * (self.numLayers + 1)
         self.deltaBias = [None] * (self.numLayers + 1)
         self.deltaWeight = [None] * (self.numLayers + 1)
@@ -104,7 +98,9 @@ class CNN(object):
         # Loop backwards through layers in CNN
         for layerNum in xrange(1, self.numLayers + 1):
             if self.layers[-layerNum] is 'S':
-                self.fcBackprop(layerNum, t)
+                # Cross entropy error at the softmax output
+                self.delta[-layerNum] = self.activations[-layerNum] - t
+                self.fcBackprop(layerNum)
             elif self.layers[-layerNum] is 'F':
                 self.fcBackprop(layerNum)
             elif self.layers[-layerNum] is 'P':
@@ -112,13 +108,8 @@ class CNN(object):
                 
     def fcFeedforward(self, layerNum):
         """
-        Performs a fully connected layer computation and the ReLU activation
-        Inputs:
-            layerNum: the number of the layer in the CNN
-        Outputs:
-            a: output after activation function
+        Feedforward for fully connected layers. Compute the dot product and apply the ReLU activation function.
         """
-        
         # Weights and biases for current layer
         w = self.param[layerNum][1]
         b = self.param[layerNum][2]
@@ -138,37 +129,20 @@ class CNN(object):
     
     def fcBackprop(self, layerNum, t = None):
         """
-        Backpropagation for fully-connected layers to calculate error gradients (delta) at the input
-        Inputs:
-            t: Numpy array of target (used for final softmax layer)
-            layerNum: the number of the layer in the CNN
+        Backpropagation for fully-connected layers. Calculate error gradients (delta) at the input and error in the weights/bias.
         """
+        # Error in the bias is the error in the output of the current layer
+        self.deltaBias[-layerNum] = self.delta[-layerNum]
         
-        # Case for the final, softmax layer
-        if t is not None:
-            # Cross-entropy error in the output
-            self.delta[-layerNum] = self.activations[-layerNum] - t
-            
-            # Error in the bias is the error in the output of the current layer
-            self.deltaBias[-layerNum] = self.delta[-layerNum]
-            
-            # Error in the weights is the outer product between the input activations and the output error
-            self.deltaWeight[-layerNum] = np.outer(self.delta[-layerNum], self.activations[-layerNum - 1])
+        # Error in the weights is the outer product between the input activations and the output error. In this implementation, we transpose the outer product because the weight matrices are already transposed.
+        self.deltaWeight[-layerNum] = np.outer(self.delta[-layerNum], self.activations[-layerNum - 1].flatten('C'))
         
-        # Case for normal fully-connected layers
-        else:
-            # Error in the output is the product between (1) the product between the weight matrix and the output error of the next layer and (2) the derivative of the ReLU activation of the current layer
-            self.delta[-layerNum] = np.multiply(np.dot(self.param[-layerNum + 1][1].T, self.delta[-layerNum + 1]), self.activations[-layerNum] != 0)
-            
-            # Error in the bias is the error in the output of the current layer
-            self.deltaBias[-layerNum] = self.delta[-layerNum]
-            
-            # Error in the weights is the outer product between the input activations and the output error
-            self.deltaWeight[-layerNum] = np.outer(self.activations[-layerNum - 1].flatten('C'), self.delta[-layerNum])
+        # Error in the input is the element-wise product between (1) the matrix product between the weight matrix and the output error and (2) the derivative of the ReLU input activation
+        self.delta[-layerNum - 1] = np.multiply(np.dot(self.param[-layerNum][1].T, self.delta[-layerNum]), self.activations[-layerNum - 1].flatten('C') != 0)
         
     def poolFeedforward(self, layerNum):
         """
-        Feedforward for the max pooling layer
+        Feedforward for the max pooling layer. Find the max pooling output and the indices for the max values.
         """
         # Find the pooling downsampling rate for the current pooling layer
         poolSize = self.param[layerNum][1]
@@ -179,7 +153,7 @@ class CNN(object):
         # Find the number of input activation channels
         depth = self.activations[layerNum].shape[0]
         
-        # Reshape the input activation in a way to find the max value of each pooling block by finding the max along a certain dimension
+        # Reshape the input activation in a way to find the max value of each pooling block by finding the max along certain dimensions
         actReshape = self.activations[layerNum].reshape(depth, k, poolSize, k, poolSize)
         
         # Calculate the output activation, a.k.a. find the max values
@@ -197,16 +171,8 @@ class CNN(object):
     
     def poolBackprop(self, layerNum):
         """
-        Backpropagation for max pooling layer.
+        Backpropagation for max pooling layer. Propagate the errors from the output to the indices in the input that correspond to the max values.
         """
-        # If the following layer is FC, then calculate the input error gradient for that FC layer
-        if self.layers[-layerNum + 1] is 'F':
-            # Flatten input activation for the FC layer
-            self.activations[-layerNum] = self.activations[-layerNum].flatten('C')
-                
-            # Error in the output is the product between (1) the product between the weight matrix and the output error of the next layer and (2) the derivative of the ReLU activation of the current layer
-            self.delta[-layerNum] = np.multiply(np.dot(self.param[-layerNum + 1][1].T, self.delta[-layerNum + 1]), self.activations[-layerNum] != 0)
-        
         # Initialize array for error at the input with all zeros
         self.delta[-layerNum - 1] = np.zeros(self.activations[-layerNum - 1].size)
         
