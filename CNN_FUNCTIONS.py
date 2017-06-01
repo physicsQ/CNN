@@ -243,16 +243,25 @@ def reshape_batch_data(dic):
     return reshaped_dic
     
 
+def zero_padding(pre_layer, padding_number = 2):
+    height = np.shape(pre_layer)[0]
+    width = np.shape(pre_layer)[1]
+    depth = np.shape(pre_layer)[2]
+    post_layer = np.zeros((height + 2 * padding_number, width + 2 * padding_number, depth))
+    post_layer[padding_number:padding_number + height, padding_number:padding_number + width, :] = pre_layer
+    return post_layer
+
 def conv_layer(pre_layer, filters, moving_step = 1):
     '''
-    Purpose: --- conv_layer is the function doing convolution on the pre_layer, and generate the post_layer
-    pre_layer is the input layer before doing convolution. It has dimension w*h*d (width * height * depth)
-    filters has dimention r * c * d * number_of_filters(number of row * number of column * depth * number of filters)
-    moving_step is the how the left corner of receptive field is moving. 
-    output: post_layer with new width =  (w - c + moving_step) / moving_step
-                       with new height = (h - r + moving_step) / moving_step
-                       with new depth = number_of_filters
-    '''
+        Purpose: --- conv_layer is the function doing convolution on the pre_layer, and generate the post_layer
+        pre_layer is the input layer before doing convolution. It has dimension w*h*d (width * height * depth)
+        filters has dimention r * c * d * number_of_filters(number of row * number of column * depth * number of filters)
+        moving_step is the how the left corner of receptive field is moving.
+        output: post_layer with new width =  (w - c + moving_step) / moving_step
+        with new height = (h - r + moving_step) / moving_step
+        with new depth = number_of_filters
+        We flip the filter in this layer.
+        '''
     #print(np.shape(pre_layer))
     w = np.shape(pre_layer)[1]
     h = np.shape(pre_layer)[0]
@@ -267,14 +276,17 @@ def conv_layer(pre_layer, filters, moving_step = 1):
     new_h = int((h - r + moving_step) / moving_step)
     new_d = np.shape(filters)[3]
     post_layer = np.zeros((new_w, new_h, new_d))
+    flipped_filters = np.zeros((r, c, d))
+    #----flip the filters
+    for m in range(0, d):
+        flipped_filters[:, :, m] = np.flip(filters[:,:,m].flatten(), 0).reshape((r, c))
     
+    #----doing dot product
     for i in range(0, new_w):
         for j in range(0, new_h):
             for k in range(0, new_d):
                 # calculate the convolution
-                # first I nedd to "reverse" the filter of each depth layer,
-                # But I don't think that is necessary
-                temp_dot_product = np.multiply(filters[:,:,:,k], pre_layer[j*moving_step:j*moving_step + c, i*moving_step:i*moving_step + r, :])   
+                temp_dot_product = np.multiply(flipped_filters[:,:,:,k], pre_layer[j*moving_step:j*moving_step + c, i*moving_step:i*moving_step + r, :])
                 #print(sum(sum(sum(temp_dot_product))))
                 #post_layer[j, i, k] = sum(sum(sum(temp_dot_product)))
                 temp1 = temp_dot_product
@@ -283,6 +295,14 @@ def conv_layer(pre_layer, filters, moving_step = 1):
                     temp2 = sum(temp1)
                     temp1 = temp2
                 post_layer[j, i, k] = temp1
+    return post_layer
+def activation(pre_layer, act = 'relu'):
+    '''
+        relu: max(0, x)
+        '''
+    post_layer = pre_layer.copy()
+    if act == 'relu':
+        post_layer = post_layer[post_layer < 0] = 0
     return post_layer
 
 def softmax(z):
