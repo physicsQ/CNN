@@ -70,7 +70,18 @@ class CNN(object):
         
         # Remove the input size
         self.param.remove(self.param[0])
-        
+    
+    def SGD(self, image, label, nu, thres):
+        """
+        Stochastic gradient descent to train the CNN. Loop through the feedforward and backprop functions until the error converges.
+        Input:
+            image: NumPy array representing input image to be trained
+            label: one-hot encoded ground truth label for the input image
+            nu: learning rate for the gradient descent algorithm
+            thres: convergence threshold for the error
+        """
+        pass
+    
     def feedforward(self, input):
         """
         Feedforward through the layers of the CNN, calculating the output activations for each layer.
@@ -127,7 +138,7 @@ class CNN(object):
         
         self.activations[layerNum + 1] = a
     
-    def fcBackprop(self, layerNum, t = None):
+    def fcBackprop(self, layerNum):
         """
         Backpropagation for fully-connected layers. Calculate error gradients (delta) at the input and error in the weights/bias.
         """
@@ -181,6 +192,23 @@ class CNN(object):
         
         # Reshape the input error array to the same shape as the input activation
         self.delta[-layerNum - 1] = np.reshape(self.delta[-layerNum - 1], self.activations[-layerNum - 1].shape)
+    
+    def convFeedforward(self, layerNum):
+        """
+        Feedforward for convolutional layer. Compute the convolution between the input activation and the filters and apply the ReLU activation function.
+        """
+        # Do a convolution plus bias
+        x = self.activations[layerNum]
+        z = conv_layer(x, self.param[layerNum][1], self.param[layerNum][3]) + self.param[layerNum][2]
+        
+        # Apply the ReLU activation function
+        self.activations[layerNum + 1] = np.maximum(z, 0)
+    
+    def convBackprop(self, layerNum):
+        """
+        Backpropagation for convolutional layer. Calculate the errors at the input and the convolutional filter weights.
+        """
+        pass
 
 def unpickle(file):
     '''
