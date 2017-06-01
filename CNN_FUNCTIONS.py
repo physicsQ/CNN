@@ -41,14 +41,15 @@ class CNN(object):
             # Convolutional layer
             if self.layers[i] is 'C':
                 filterDim, numFilters, stride = convFilters.pop(0)
-                weightBound = filterDim ** 2 * self.param[-1][0][0]
-                filterShape = [numFilters, self.param[-1][0][0], filterDim, filterDim]
+                numChannels = self.param[-1][0][0]
+                weightBound = filterDim ** 2 * numChannels
+                filterShape = [numFilters, numChannels, filterDim, filterDim]
                 
                 # Output size, weight filters, bias, stride, zero pad
-                self.param.append([(filterShape[0], filterShape[2], filterShape[3]), rng.normal(loc = 0.0, scale = 1.0/weightBound, size = filterShape), np.zeros([numFilters,]), stride, (filterDim - stride)/2])
+                self.param.append([(numFilters, self.param[-1][0][1], self.param[-1][0][2]), rng.normal(loc = 0.0, scale = 1.0/weightBound, size = filterShape), np.zeros([numFilters,]), stride, (filterDim - stride)/2])
                 
                 if not ((filterDim - stride) % 2 == 0):
-                    raise ValueError('Filter dimensions and stride length do not allow for zero padding to maintain width and height of input to convoluational layer.')
+                    raise ValueError('Filter dimensions and stride length do not allow for zero padding to maintain width and height of input to convolational layer.')
             
             # Pooling layer
             elif self.layers[i] is 'P':
@@ -57,7 +58,7 @@ class CNN(object):
                 # Output size, pooling size, max value index boolean mask
                 self.param.append([(self.param[-1][0][0], self.param[-1][0][1] / poolSize, self.param[-1][0][2] / poolSize), poolSize, 0])
                 
-                if not (self.param[-1][0][1] % poolSize == 0 and self.param[-1][0][2] % poolSize == 0):
+                if not (self.param[-2][0][1] % poolSize == 0 and self.param[-2][0][2] % poolSize == 0):
                     raise ValueError('Pooling sizes do not divide evenly with width and height of input activation.')
             
             # FC or Softmax layer
@@ -92,7 +93,9 @@ class CNN(object):
         
         # Loop forwards through layers in CNN
         for layerNum in xrange(self.numLayers):
-            if self.layers[layerNum] is 'P':
+            if self.layers[layerNum] is 'C':
+                self.convFeedforward(layerNum)
+            elif self.layers[layerNum] is 'P':
                 self.poolFeedforward(layerNum)
             elif self.layers[layerNum] is 'F' or 'S':
                 self.fcFeedforward(layerNum)
@@ -126,17 +129,15 @@ class CNN(object):
         b = self.param[layerNum][2]
         
         # Flatten the input activation into a 1D array
-        a = self.activations[layerNum].flatten('C')
+        x = self.activations[layerNum].flatten('C')
         
         # ReLU activation for fully-connected layers
         if self.layers[layerNum] is 'F':
-            a = np.maximum(np.dot(w, a) + b, 0)
+            self.activations[layerNum + 1] = np.maximum(np.dot(w, x) + b, 0)
         
         # Softmax activation for final fully-connected layer
         elif self.layers[layerNum] is 'S':
-            a = softmax(np.dot(w, a) + b)
-        
-        self.activations[layerNum + 1] = a
+            self.activations[layerNum + 1] = softmax(np.dot(w, x) + b)
     
     def fcBackprop(self, layerNum):
         """
@@ -197,12 +198,15 @@ class CNN(object):
         """
         Feedforward for convolutional layer. Compute the convolution between the input activation and the filters and apply the ReLU activation function.
         """
-        # Do a convolution plus bias
+        # Parameters: input activation, filter, bias, stride, zero pad
         x = self.activations[layerNum]
-        z = conv_layer(x, self.param[layerNum][1], self.param[layerNum][3]) + self.param[layerNum][2]
+        w = self.param[layerNum][1]
+        b = self.param[layerNum][2][:, np.newaxis, np.newaxis]
+        stride = self.param[layerNum][3]
+        zeroPad = self.param[layerNum][4]
         
-        # Apply the ReLU activation function
-        self.activations[layerNum + 1] = np.maximum(z, 0)
+        # Do a convolution plus bias and apply the ReLU activation function
+        self.activations[layerNum + 1] = np.maximum(conv_layer(x, w, stride, zeroPad) + b, 0)
     
     def convBackprop(self, layerNum):
         """
@@ -251,58 +255,47 @@ def zero_padding(pre_layer, padding_number = 2):
     post_layer[padding_number:padding_number + height, padding_number:padding_number + width, :] = pre_layer
     return post_layer
 
-def conv_layer(pre_layer, filters, moving_step = 1):
+def conv_layer(pre_layer, filters, stride, zeroPad, flipFilter = 1):
     '''
-        Purpose: --- conv_layer is the function doing convolution on the pre_layer, and generate the post_layer
-        pre_layer is the input layer before doing convolution. It has dimension w*h*d (width * height * depth)
-        filters has dimention r * c * d * number_of_filters(number of row * number of column * depth * number of filters)
-        moving_step is the how the left corner of receptive field is moving.
-        output: post_layer with new width =  (w - c + moving_step) / moving_step
-        with new height = (h - r + moving_step) / moving_step
-        with new depth = number_of_filters
-        We flip the filter in this layer.
-        '''
-    #print(np.shape(pre_layer))
-    w = np.shape(pre_layer)[1]
-    h = np.shape(pre_layer)[0]
-    d = np.shape(pre_layer)[2]
-    r = np.shape(filters)[0]
-    c = np.shape(filters)[1]
-    if np.shape(filters)[2] != d:
-        #print('d of filter:', np.shape(filters))
-        print('dimension dismatch! filter and input layer should have same depth.')
-    number_of_filters = np.shape(filters)[3]
-    new_w = int((w - c + moving_step) / moving_step)
-    new_h = int((h - r + moving_step) / moving_step)
-    new_d = np.shape(filters)[3]
-    post_layer = np.zeros((new_w, new_h, new_d))
-    flipped_filters = np.zeros((r, c, d))
-    #----flip the filters
-    for m in range(0, d):
-        flipped_filters[:, :, m] = np.flip(filters[:,:,m].flatten(), 0).reshape((r, c))
+    Do convolution on the pre_layer, and generate the post_layer
+    Inputs:
+        pre_layer: input activation with dimension d * h * w (depth * height * width)
+        filters: dimension numFilters * filterDepth * r * c (number of filters * depth * number of rows * number of columns)
+        stride: how much the left corner of receptive field is moving
+        zeroPad: how many layers of zeros to pad the input activations
+        flipFilter: 1 to flip filter (convolution), 0 to not flip (correlation)
+    Output:
+        post_layer: output activation
+    '''
+    # Find depth, height, and width of input activation
+    d, h, w = pre_layer.shape
     
-    #----doing dot product
-    for i in range(0, new_w):
-        for j in range(0, new_h):
-            for k in range(0, new_d):
-                # calculate the convolution
-                temp_dot_product = np.multiply(flipped_filters[:,:,:,k], pre_layer[j*moving_step:j*moving_step + c, i*moving_step:i*moving_step + r, :])
-                #print(sum(sum(sum(temp_dot_product))))
-                #post_layer[j, i, k] = sum(sum(sum(temp_dot_product)))
-                temp1 = temp_dot_product
-                for p in range(0, d):
-                    temp2 = []
-                    temp2 = sum(temp1)
-                    temp1 = temp2
-                post_layer[j, i, k] = temp1
-    return post_layer
-def activation(pre_layer, act = 'relu'):
-    '''
-        relu: max(0, x)
-        '''
-    post_layer = pre_layer.copy()
-    if act == 'relu':
-        post_layer = post_layer[post_layer < 0] = 0
+    # Find number of filters, filter depth, filter height, and filter width
+    numFilters, filterDepth, r, c = filters.shape
+    
+    # Check to see if filter depth and input activation depth are the same
+    if filterDepth != d:
+        raise ValueError('Dimension mismatch! Filter and input activation should have the same depth.')
+    
+    # Zero-pad the input along the last two axes
+    padWidth = ((0,0), (zeroPad, zeroPad), (zeroPad, zeroPad))
+    pre_layer = np.lib.pad(pre_layer, padWidth, 'constant')
+    
+    # For a convolution, flip the filters
+    if flipFilter:
+        filters = np.rot90(filters, k = 2, axes = (-1, -2))
+    
+    post_layer = np.zeros((numFilters, h, w))
+    # Do convolution
+    for i in xrange(h):
+        for j in xrange(w):
+            for k in xrange(numFilters):
+                # Multiply element-wise
+                temp_dot_product = np.multiply(filters[k,:,:,:], pre_layer[:, i*stride:i*stride + r, j*stride:j*stride + c])
+                
+                # Sum up element-wise multiplication to complete dot product
+                post_layer[k, i, j] = np.sum(temp_dot_product)
+    
     return post_layer
 
 def softmax(z):
