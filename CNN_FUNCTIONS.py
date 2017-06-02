@@ -106,8 +106,8 @@ class CNN(object):
         """
         # Initialize list to store NumPy arrays of errors
         self.delta = [None] * (self.numLayers + 1)
-        self.deltaBias = [None] * (self.numLayers + 1)
-        self.deltaWeight = [None] * (self.numLayers + 1)
+        self.deltaBias = [None] * self.numLayers
+        self.deltaWeight = [None] * self.numLayers
         
         # Loop backwards through layers in CNN
         for layerNum in xrange(1, self.numLayers + 1):
@@ -119,6 +119,8 @@ class CNN(object):
                 self.fcBackprop(layerNum)
             elif self.layers[-layerNum] is 'P':
                 self.poolBackprop(layerNum)
+            elif self.layers[-layerNum] is 'C':
+                self.convBackprop(layerNum)
                 
     def fcFeedforward(self, layerNum):
         """
@@ -198,7 +200,7 @@ class CNN(object):
         """
         Feedforward for convolutional layer. Compute the convolution between the input activation and the filters and apply the ReLU activation function.
         """
-        # Parameters: input activation, filter, bias, stride, zero pad
+        # Parameters: input activation, filter, bias, stride, zero pad width
         x = self.activations[layerNum]
         w = self.param[layerNum][1]
         b = self.param[layerNum][2][:, np.newaxis, np.newaxis]
@@ -212,7 +214,19 @@ class CNN(object):
         """
         Backpropagation for convolutional layer. Calculate the errors at the input and the convolutional filter weights.
         """
-        pass
+        # Parameters: transposed filter weights, stride, zero pad width
+        w = self.param[-layerNum][1].swapaxes(0, 1)
+        stride = self.param[-layerNum][3]
+        zeroPad = self.param[-layerNum][4]
+        
+        # Cross-correlate the output error with the transposed weights and multiply by the derivative of the ReLU input activation to get the input error
+        self.delta[-layerNum - 1] = np.multiply(conv_layer(self.delta[-layerNum], w, stride, zeroPad, flipFilter = 0), self.activations[-layerNum - 1] != 0)
+        
+        # Sum values in each activation map to get the error in the bias
+        self.deltaBias[-layerNum] = np.sum(self.delta[-layerNum], axis = (1, 2))
+        
+        # Cross-correlate the input activation with the output error to get the error in the weights
+        self.deltaWeight[-layerNum] = conv_layer(self.activations[-layerNum - 1], self.delta[-layerNum], stride, zeroPad, flipFilter = 0, dW = 1)
 
 def unpickle(file):
     '''
@@ -255,7 +269,7 @@ def zero_padding(pre_layer, padding_number = 2):
     post_layer[padding_number:padding_number + height, padding_number:padding_number + width, :] = pre_layer
     return post_layer
 
-def conv_layer(pre_layer, filters, stride, zeroPad, flipFilter = 1):
+def conv_layer(pre_layer, filters, stride, zeroPad, flipFilter = 1, dW = 0):
     '''
     Do convolution on the pre_layer, and generate the post_layer
     Inputs:
@@ -264,17 +278,22 @@ def conv_layer(pre_layer, filters, stride, zeroPad, flipFilter = 1):
         stride: how much the left corner of receptive field is moving
         zeroPad: how many layers of zeros to pad the input activations
         flipFilter: 1 to flip filter (convolution), 0 to not flip (correlation)
+        dW: 1 to perform a different method for the backpropagation of the error in the weights, where the inputs are the input activation and the output error, and the output is the set of errors for each filter in the layer
     Output:
         post_layer: output activation
     '''
     # Find depth, height, and width of input activation
     d, h, w = pre_layer.shape
     
-    # Find number of filters, filter depth, filter height, and filter width
-    numFilters, filterDepth, r, c = filters.shape
+    if dW is 0:
+        # Find number of filters, filter depth, filter height, and filter width
+        numFilters, filterDepth, r, c = filters.shape
+    else:
+        # Find the depth, heigh, and width of output error
+        numFilters, r, c = filters.shape
     
     # Check to see if filter depth and input activation depth are the same
-    if filterDepth != d:
+    if dW is 0 and filterDepth is not d:
         raise ValueError('Dimension mismatch! Filter and input activation should have the same depth.')
     
     # Zero-pad the input along the last two axes
@@ -282,19 +301,28 @@ def conv_layer(pre_layer, filters, stride, zeroPad, flipFilter = 1):
     pre_layer = np.lib.pad(pre_layer, padWidth, 'constant')
     
     # For a convolution, flip the filters
-    if flipFilter:
+    if flipFilter and dW is 0:
         filters = np.rot90(filters, k = 2, axes = (-1, -2))
     
-    post_layer = np.zeros((numFilters, h, w))
-    # Do convolution
-    for i in xrange(h):
-        for j in xrange(w):
-            for k in xrange(numFilters):
-                # Multiply element-wise
-                temp_dot_product = np.multiply(filters[k,:,:,:], pre_layer[:, i*stride:i*stride + r, j*stride:j*stride + c])
-                
-                # Sum up element-wise multiplication to complete dot product
-                post_layer[k, i, j] = np.sum(temp_dot_product)
+    if dW is 0:
+        post_layer = np.zeros((numFilters, h, w))
+        # Do convolution
+        for i in xrange(h):
+            for j in xrange(w):
+                for k in xrange(numFilters):
+                    # Multiply element-wise
+                    temp_dot_product = np.multiply(filters[k,:,:,:], pre_layer[:, i*stride:i*stride + r, j*stride:j*stride + c])
+                    
+                    # Sum up element-wise multiplication to complete dot product
+                    post_layer[k, i, j] = np.sum(temp_dot_product)
+    else:
+        post_layer = np.zeros((numFilters, d, (h - r + 2*zeroPad)/stride + 1, (w - c + 2*zeroPad)/stride + 1))
+        for i in xrange(post_layer.shape[2]):
+            for j in xrange(post_layer.shape[3]):
+                for k in xrange(d):
+                    for p in xrange(numFilters):
+                        temp_dot_product = np.multiply(filters[p,:,:], pre_layer[k, i*stride:i*stride + r, j*stride:j*stride + c])
+                        post_layer[p, k, i, j] = np.sum(temp_dot_product)
     
     return post_layer
 
