@@ -1,5 +1,5 @@
 import numpy as np
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 
 # Fix the random state to genereate consistent results
 rng = np.random.RandomState(23)
@@ -20,10 +20,6 @@ class CNN(object):
         """
         
         self.numLayers = len(layers)
-        self.numConvLayers = layers.count('C')
-        self.numPoolLayers = layers.count('P')
-        self.numFCLayers = layers.count('F') + layers.count('S')
-        
         self.layers = layers
         
         self.createArchitecture(inputSize, convFilters, downsample, fcSize)
@@ -34,6 +30,8 @@ class CNN(object):
         """
         # Initialize list to store input/output sizes for each layer, initial weight filters/matrices in conv and FC layers, and other parameters (convolution stride and zero padding, pooling stride and filter size)
         self.param = [[inputSize, None]]
+        self.deltaWeight = [None]
+        self.deltaBias = [None]
         
         # Loop through the layers
         for i in xrange(self.numLayers):
@@ -48,6 +46,10 @@ class CNN(object):
                 # Output size, weight filters, bias, stride, zero pad
                 self.param.append([(numFilters, self.param[-1][0][1], self.param[-1][0][2]), rng.normal(loc = 0.0, scale = 1.0/weightBound, size = filterShape), np.zeros([numFilters,]), stride, (filterDim - stride)/2])
                 
+                # Weight/bias error
+                self.deltaWeight.append(np.zeros(filterShape))
+                self.deltaBias.append(np.zeros([numFilters,]))
+                
                 if not ((filterDim - stride) % 2 == 0):
                     raise ValueError('Filter dimensions and stride length do not allow for zero padding to maintain width and height of input to convolational layer.')
             
@@ -57,6 +59,10 @@ class CNN(object):
                 
                 # Output size, pooling size, max value index boolean mask
                 self.param.append([(self.param[-1][0][0], self.param[-1][0][1] / poolSize, self.param[-1][0][2] / poolSize), poolSize, 0])
+                
+                # Weight/bias error
+                self.deltaWeight.append(np.zeros(1))
+                self.deltaBias.append(np.zeros(1))
                 
                 if not (self.param[-2][0][1] % poolSize == 0 and self.param[-2][0][2] % poolSize == 0):
                     raise ValueError('Pooling sizes do not divide evenly with width and height of input activation.')
@@ -68,20 +74,66 @@ class CNN(object):
                 
                 # Output size, weight matrix, bias
                 self.param.append([(1, 1, fcOut), rng.normal(loc = 0.0, scale = np.sqrt(1.0 / fcIn), size = [fcOut, fcIn]), rng.normal(loc = 0.0, scale = 1.0, size = [fcOut,])])
+                
+                # Weight/bias error
+                self.deltaWeight.append(np.zeros([fcOut, fcIn]))
+                self.deltaBias.append(np.zeros([fcOut,]))
         
-        # Remove the input size
+        # Remove the input size and other initializations
         self.param.remove(self.param[0])
+        self.deltaWeight.remove(self.deltaWeight[0])
+        self.deltaBias.remove(self.deltaBias[0])
     
-    def SGD(self, image, label, nu, thres):
+    def SGD(self, trainData, trainLabel, batchSize, epochs, eta):
         """
-        Stochastic gradient descent to train the CNN. Loop through the feedforward and backprop functions until the error converges.
+        Stochastic gradient descent (SGD) to train the CNN. Loop through the feedforward and backprop functions until the error converges.
         Input:
-            image: NumPy array representing input image to be trained
-            label: one-hot encoded ground truth label for the input image
-            nu: learning rate for the gradient descent algorithm
-            thres: convergence threshold for the error
+            trainData: NumPy array representing all training data, with dimension (number of training images, channels, height, width)
+            trainLabel: NumPy array representing label for each training image in integer format
+            batchSize: size of minibatch for SGD
+            epochs: how many epochs to run
+            eta: learning rate
         """
-        pass
+        # Total number of training examples
+        numTrain = trainData.shape[0]
+        
+        # Total number of minibatches to train
+        numBatches = numTrain/batchSize
+        if numTrain % batchSize is not 0:
+            raise ValueError('Batch size should divide evenly into number of training samples.')
+        
+        # Number of classes in the data
+        numClass = np.unique(trainLabel).size
+        
+        # Loop through epochs
+        for i in xrange(epochs):
+            print('Epoch %d of %d' % (i+1, epochs))
+            # Find a new random shuffling of the data for each epoch
+            order = np.arange(numTrain)
+            np.random.shuffle(order)
+            
+            # Store the indices of the shuffling
+            miniBatch = np.reshape(order, (batchSize, numBatches))
+            
+            # Loop through each minibatch
+            for j in xrange(numBatches):
+                print('Minibatch %d of %d' % (j+1, numBatches))
+                # Initialize arrays to accumulate errors in weights and biases
+                cumWeight = [np.zeros(w.shape) for w in self.deltaWeight]
+                cumBias = [np.zeros(b.shape) for b in self.deltaBias]
+                
+                # Loop through the samples in each minibatch
+                for k in miniBatch[:, j]:
+                    self.feedforward(trainData[k, :, :, :])
+                    self.backprop(np.eye(numClass)[trainLabel[k]])
+                    
+                    # Accumulate the weight/bias errors
+                    cumWeight = [nw+dnw for nw, dnw in zip(cumWeight, self.deltaWeight)]
+                    cumBias = [nb+dnb for nb, dnb in zip(cumBias, self.deltaBias)]
+                
+                # Update weight/bias
+                self.deltaWeight = [w - (eta/batchSize)*nw for w, nw in zip(self.deltaWeight, cumWeight)]
+                self.deltaBias = [b - (eta/batchSize)*nb for b, nb in zip(self.deltaBias, cumBias)]
     
     def feedforward(self, input):
         """
@@ -106,8 +158,6 @@ class CNN(object):
         """
         # Initialize list to store NumPy arrays of errors
         self.delta = [None] * (self.numLayers + 1)
-        self.deltaBias = [None] * self.numLayers
-        self.deltaWeight = [None] * self.numLayers
         
         # Loop backwards through layers in CNN
         for layerNum in xrange(1, self.numLayers + 1):
@@ -259,7 +309,6 @@ def reshape_batch_data(dic):
             reshaped_dic['data'][:,:,j,i] = np.reshape(dic['data'][i,j*1024:(j+1)*1024], (32,32))
             #reshaped_dic['data'][:,:,:,i] = np.reshape(dic['data'][i, :],(32, 32, 3))
     return reshaped_dic
-    
 
 def zero_padding(pre_layer, padding_number = 2):
     height = np.shape(pre_layer)[0]
@@ -302,7 +351,9 @@ def conv_layer(pre_layer, filters, stride, zeroPad, flipFilter = 1, dW = 0):
     
     # For a convolution, flip the filters
     if flipFilter and dW is 0:
-        filters = np.rot90(filters, k = 2, axes = (-1, -2))
+#        filters = np.rot90(filters, k = 2, axes = (-1, -2))
+        # For NumPy version < 1.12
+        filters = np.rot90(filters.transpose((2, 3, 0, 1)), k = 2).transpose((2, 3, 0, 1))
     
     if dW is 0:
         post_layer = np.zeros((numFilters, h, w))
@@ -332,3 +383,10 @@ def softmax(z):
     # Subtract the max for numerical stability
     e_z = np.exp(z - np.max(z))
     return e_z / np.sum(e_z)
+
+# Some test code
+#train = unpickle('data_batch_1')
+#trainData = train['data'].reshape((10000, 3, 32, 32))
+#trainLabel = train['labels']
+#x = CNN(inputSize = (3, 32, 32), layers = ['C', 'P', 'F', 'S'], convFilters = [(3, 3, 1)], downsample = [2], fcSize = [256, 10])
+#x.SGD(trainData[0: 1000, :, :, :], trainLabel[0: 1000], 100, 1, 0.9)
