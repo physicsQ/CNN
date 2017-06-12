@@ -1,4 +1,7 @@
+from __future__ import division
 import numpy as np
+from numba import jit
+import threading
 #import matplotlib.pyplot as plt
 
 # Fix the random state to genereate consistent results
@@ -7,7 +10,7 @@ rng = np.random.RandomState(23)
 # A class for defining the structure of a CNN
 class CNN(object):
     
-    def __init__(self, inputSize = (3, 32, 32), layers = ['C', 'P', 'F', 'S'], convFilters = [(3, 10, 1)], downsample = [2], fcSize = [4096, 10]):
+    def __init__(self, inputSize = (3, 32, 32), layers = ['C', 'P', 'F', 'S'], convFilters = [(3, 10, 1)], downsample = [2], fcSize = [4096, 10], parallel = True, numThreads = 4):
         """
         An object class for defining the CNN architecture.
         
@@ -21,6 +24,8 @@ class CNN(object):
         
         self.numLayers = len(layers)
         self.layers = layers
+        self.parallel = parallel
+        self.numThreads = numThreads
         
         self.createArchitecture(inputSize, convFilters, downsample, fcSize)
     
@@ -44,7 +49,7 @@ class CNN(object):
                 filterShape = [numFilters, numChannels, filterDim, filterDim]
                 
                 # Output size, weight filters, bias, stride, zero pad
-                self.param.append([(numFilters, self.param[-1][0][1], self.param[-1][0][2]), rng.normal(loc = 0.0, scale = 1.0/weightBound, size = filterShape), np.zeros([numFilters,]), stride, (filterDim - stride)/2])
+                self.param.append([(numFilters, self.param[-1][0][1], self.param[-1][0][2]), rng.normal(loc = 0.0, scale = 1.0/weightBound, size = filterShape), np.zeros([numFilters,]), stride, (filterDim - stride)//2])
                 
                 # Weight/bias error
                 self.deltaWeight.append(np.zeros(filterShape))
@@ -58,7 +63,7 @@ class CNN(object):
                 poolSize = downsample.pop(0)
                 
                 # Output size, pooling size, max value index boolean mask
-                self.param.append([(self.param[-1][0][0], self.param[-1][0][1] / poolSize, self.param[-1][0][2] / poolSize), poolSize, 0])
+                self.param.append([(self.param[-1][0][0], self.param[-1][0][1] // poolSize, self.param[-1][0][2] // poolSize), poolSize, 0])
                 
                 # Weight/bias error
                 self.deltaWeight.append(np.zeros(1))
@@ -68,7 +73,7 @@ class CNN(object):
                     raise ValueError('Pooling sizes do not divide evenly with width and height of input activation.')
             
             # FC or Softmax layer
-            elif self.layers[i] is 'F' or 'S':
+            else:
                 fcIn = self.param[-1][0][0] * self.param[-1][0][1] * self.param[-1][0][2]
                 fcOut = fcSize.pop(0)
                 
@@ -98,7 +103,7 @@ class CNN(object):
         numTrain = trainData.shape[0]
         
         # Total number of minibatches to train
-        numBatches = numTrain/batchSize
+        numBatches = numTrain//batchSize
         if numTrain % batchSize is not 0:
             raise ValueError('Batch size should divide evenly into number of training samples.')
         
@@ -132,8 +137,10 @@ class CNN(object):
                     cumBias = [nb+dnb for nb, dnb in zip(cumBias, self.deltaBias)]
                 
                 # Update weight/bias
-                self.deltaWeight = [w - (eta/batchSize)*nw for w, nw in zip(self.deltaWeight, cumWeight)]
-                self.deltaBias = [b - (eta/batchSize)*nb for b, nb in zip(self.deltaBias, cumBias)]
+                for l in xrange(self.numLayers):
+                    if self.layers[l] is not 'P':
+                        self.param[l][1] -= (eta/batchSize)*cumWeight[l]
+                        self.param[l][2] -= (eta/batchSize)*cumBias[l]
     
     def feedforward(self, input):
         """
@@ -144,13 +151,13 @@ class CNN(object):
         self.activations[0] = input
         
         # Loop forwards through layers in CNN
-        for layerNum in xrange(self.numLayers):
-            if self.layers[layerNum] is 'C':
-                self.convFeedforward(layerNum)
-            elif self.layers[layerNum] is 'P':
-                self.poolFeedforward(layerNum)
-            elif self.layers[layerNum] is 'F' or 'S':
-                self.fcFeedforward(layerNum)
+        for l in xrange(self.numLayers):
+            if self.layers[l] is 'C':
+                self.convFeedforward(l)
+            elif self.layers[l] is 'P':
+                self.poolFeedforward(l)
+            else:
+                self.fcFeedforward(l)
     
     def backprop(self, t):
         """
@@ -160,68 +167,68 @@ class CNN(object):
         self.delta = [None] * (self.numLayers + 1)
         
         # Loop backwards through layers in CNN
-        for layerNum in xrange(1, self.numLayers + 1):
-            if self.layers[-layerNum] is 'S':
+        for l in xrange(1, self.numLayers + 1):
+            if self.layers[-l] is 'S':
                 # Cross entropy error at the softmax output
-                self.delta[-layerNum] = self.activations[-layerNum] - t
-                self.fcBackprop(layerNum)
-            elif self.layers[-layerNum] is 'F':
-                self.fcBackprop(layerNum)
-            elif self.layers[-layerNum] is 'P':
-                self.poolBackprop(layerNum)
-            elif self.layers[-layerNum] is 'C':
-                self.convBackprop(layerNum)
+                self.delta[-l] = self.activations[-l] - t
+                self.fcBackprop(l)
+            elif self.layers[-l] is 'F':
+                self.fcBackprop(l)
+            elif self.layers[-l] is 'P':
+                self.poolBackprop(l)
+            else:
+                self.convBackprop(l)
                 
-    def fcFeedforward(self, layerNum):
+    def fcFeedforward(self, l):
         """
         Feedforward for fully connected layers. Compute the dot product and apply the ReLU activation function.
         """
         # Weights and biases for current layer
-        w = self.param[layerNum][1]
-        b = self.param[layerNum][2]
+        w = self.param[l][1]
+        b = self.param[l][2]
         
         # Flatten the input activation into a 1D array
-        x = self.activations[layerNum].flatten('C')
+        x = self.activations[l].flatten('C')
         
         # ReLU activation for fully-connected layers
-        if self.layers[layerNum] is 'F':
-            self.activations[layerNum + 1] = np.maximum(np.dot(w, x) + b, 0)
+        if self.layers[l] is 'F':
+            self.activations[l + 1] = np.maximum(np.dot(w, x) + b, 0)
         
         # Softmax activation for final fully-connected layer
-        elif self.layers[layerNum] is 'S':
-            self.activations[layerNum + 1] = softmax(np.dot(w, x) + b)
+        elif self.layers[l] is 'S':
+            self.activations[l + 1] = softmax(np.dot(w, x) + b)
     
-    def fcBackprop(self, layerNum):
+    def fcBackprop(self, l):
         """
         Backpropagation for fully-connected layers. Calculate error gradients (delta) at the input and error in the weights/bias.
         """
         # Error in the bias is the error in the output of the current layer
-        self.deltaBias[-layerNum] = self.delta[-layerNum]
+        self.deltaBias[-l] = self.delta[-l]
         
         # Error in the weights is the outer product between the input activations and the output error. In this implementation, we transpose the outer product because the weight matrices are already transposed.
-        self.deltaWeight[-layerNum] = np.outer(self.delta[-layerNum], self.activations[-layerNum - 1].flatten('C'))
+        self.deltaWeight[-l] = np.outer(self.delta[-l], self.activations[-l - 1].flatten('C'))
         
         # Error in the input is the element-wise product between (1) the matrix product between the weight matrix and the output error and (2) the derivative of the ReLU input activation
-        self.delta[-layerNum - 1] = np.multiply(np.dot(self.param[-layerNum][1].T, self.delta[-layerNum]), self.activations[-layerNum - 1].flatten('C') != 0)
+        self.delta[-l - 1] = np.multiply(np.dot(self.param[-l][1].T, self.delta[-l]), self.activations[-l - 1].flatten('C') != 0)
         
-    def poolFeedforward(self, layerNum):
+    def poolFeedforward(self, l):
         """
         Feedforward for the max pooling layer. Find the max pooling output and the indices for the max values.
         """
         # Find the pooling downsampling rate for the current pooling layer
-        poolSize = self.param[layerNum][1]
+        poolSize = self.param[l][1]
         
         # Find the width/height dimension of the output activation after pooling
-        k = self.activations[layerNum].shape[-1] / poolSize
+        k = self.activations[l].shape[-1] // poolSize
         
         # Find the number of input activation channels
-        depth = self.activations[layerNum].shape[0]
+        depth = self.activations[l].shape[0]
         
         # Reshape the input activation in a way to find the max value of each pooling block by finding the max along certain dimensions
-        actReshape = self.activations[layerNum].reshape(depth, k, poolSize, k, poolSize)
+        actReshape = self.activations[l].reshape(depth, k, poolSize, k, poolSize)
         
         # Calculate the output activation, a.k.a. find the max values
-        self.activations[layerNum + 1] = actReshape.max(axis = (-1, -3))
+        self.activations[l + 1] = actReshape.max(axis = (-1, -3))
         
         # Find the indices of the max values in the input activation and represent as a boolean mask. This involves finding the argmax along the rows of the reshaped activation, then finding the argmax along the columns of the max of the reshaped activation. These two argmax calculations are then one-hot encoded to form two boolean masks, and the logical and of these two masks form the boolean mask that encodes the argmax information of the original activation.
         ind1 = actReshape.argmax(axis = -1)
@@ -231,52 +238,52 @@ class CNN(object):
         mask2 = np.eye(poolSize, dtype = 'bool')[ind2].swapaxes(-1, -2).flatten('C').repeat(poolSize)
         
         # Store the linear indices of the max values from max pooling
-        self.param[layerNum][2] = np.flatnonzero(np.logical_and(mask1, mask2))
+        self.param[l][2] = np.flatnonzero(np.logical_and(mask1, mask2))
     
-    def poolBackprop(self, layerNum):
+    def poolBackprop(self, l):
         """
         Backpropagation for max pooling layer. Propagate the errors from the output to the indices in the input that correspond to the max values.
         """
         # Initialize array for error at the input with all zeros
-        self.delta[-layerNum - 1] = np.zeros(self.activations[-layerNum - 1].size)
+        self.delta[-l - 1] = np.zeros(self.activations[-l - 1].size)
         
         # Assign errors at the output to the indices of the max values for the current max pooling layer
-        self.delta[-layerNum - 1][self.param[-layerNum][2]] = self.delta[-layerNum].flatten('C')
+        self.delta[-l - 1][self.param[-l][2]] = self.delta[-l].flatten('C')
         
         # Reshape the input error array to the same shape as the input activation
-        self.delta[-layerNum - 1] = np.reshape(self.delta[-layerNum - 1], self.activations[-layerNum - 1].shape)
+        self.delta[-l - 1] = np.reshape(self.delta[-l - 1], self.activations[-l - 1].shape)
     
-    def convFeedforward(self, layerNum):
+    def convFeedforward(self, l):
         """
         Feedforward for convolutional layer. Compute the convolution between the input activation and the filters and apply the ReLU activation function.
         """
         # Parameters: input activation, filter, bias, stride, zero pad width
-        x = self.activations[layerNum]
-        w = self.param[layerNum][1]
-        b = self.param[layerNum][2][:, np.newaxis, np.newaxis]
-        stride = self.param[layerNum][3]
-        zeroPad = self.param[layerNum][4]
+        x = self.activations[l]
+        w = self.param[l][1]
+        b = self.param[l][2][:, np.newaxis, np.newaxis]
+        stride = self.param[l][3]
+        zeroPad = self.param[l][4]
         
         # Do a convolution plus bias and apply the ReLU activation function
-        self.activations[layerNum + 1] = np.maximum(conv_layer(x, w, stride, zeroPad) + b, 0)
+        self.activations[l + 1] = np.maximum(conv_layer(x, w, stride, zeroPad, parallel = self.parallel, numThreads = self.numThreads) + b, 0)
     
-    def convBackprop(self, layerNum):
+    def convBackprop(self, l):
         """
         Backpropagation for convolutional layer. Calculate the errors at the input and the convolutional filter weights.
         """
         # Parameters: transposed filter weights, stride, zero pad width
-        w = self.param[-layerNum][1].swapaxes(0, 1)
-        stride = self.param[-layerNum][3]
-        zeroPad = self.param[-layerNum][4]
+        w = self.param[-l][1].swapaxes(0, 1)
+        stride = self.param[-l][3]
+        zeroPad = self.param[-l][4]
         
         # Cross-correlate the output error with the transposed weights and multiply by the derivative of the ReLU input activation to get the input error
-        self.delta[-layerNum - 1] = np.multiply(conv_layer(self.delta[-layerNum], w, stride, zeroPad, flipFilter = 0), self.activations[-layerNum - 1] != 0)
+        self.delta[-l - 1] = np.multiply(conv_layer(self.delta[-l], w, stride, zeroPad, flipFilter = False, parallel = self.parallel, numThreads = self.numThreads), self.activations[-l - 1] != 0)
         
         # Sum values in each activation map to get the error in the bias
-        self.deltaBias[-layerNum] = np.sum(self.delta[-layerNum], axis = (1, 2))
+        self.deltaBias[-l] = np.sum(self.delta[-l], axis = (1, 2))
         
         # Cross-correlate the input activation with the output error to get the error in the weights
-        self.deltaWeight[-layerNum] = conv_layer(self.activations[-layerNum - 1], self.delta[-layerNum], stride, zeroPad, flipFilter = 0, dW = 1)
+        self.deltaWeight[-l] = conv_layer(self.activations[-l - 1], self.delta[-l], stride, zeroPad, flipFilter = False, dW = True, parallel = self.parallel, numThreads = self.numThreads)
 
 def unpickle(file):
     '''
@@ -310,15 +317,7 @@ def reshape_batch_data(dic):
             #reshaped_dic['data'][:,:,:,i] = np.reshape(dic['data'][i, :],(32, 32, 3))
     return reshaped_dic
 
-def zero_padding(pre_layer, padding_number = 2):
-    height = np.shape(pre_layer)[0]
-    width = np.shape(pre_layer)[1]
-    depth = np.shape(pre_layer)[2]
-    post_layer = np.zeros((height + 2 * padding_number, width + 2 * padding_number, depth))
-    post_layer[padding_number:padding_number + height, padding_number:padding_number + width, :] = pre_layer
-    return post_layer
-
-def conv_layer(pre_layer, filters, stride, zeroPad, flipFilter = 1, dW = 0):
+def conv_layer(pre_layer, filters, stride, zeroPad, flipFilter = True, dW = False, parallel = True, numThreads = 1):
     '''
     Do convolution on the pre_layer, and generate the post_layer
     Inputs:
@@ -334,7 +333,7 @@ def conv_layer(pre_layer, filters, stride, zeroPad, flipFilter = 1, dW = 0):
     # Find depth, height, and width of input activation
     d, h, w = pre_layer.shape
     
-    if dW is 0:
+    if dW is False:
         # Find number of filters, filter depth, filter height, and filter width
         numFilters, filterDepth, r, c = filters.shape
     else:
@@ -342,7 +341,7 @@ def conv_layer(pre_layer, filters, stride, zeroPad, flipFilter = 1, dW = 0):
         numFilters, r, c = filters.shape
     
     # Check to see if filter depth and input activation depth are the same
-    if dW is 0 and filterDepth is not d:
+    if dW is False and filterDepth is not d:
         raise ValueError('Dimension mismatch! Filter and input activation should have the same depth.')
     
     # Zero-pad the input along the last two axes
@@ -350,15 +349,129 @@ def conv_layer(pre_layer, filters, stride, zeroPad, flipFilter = 1, dW = 0):
     pre_layer = np.lib.pad(pre_layer, padWidth, 'constant')
     
     # For a convolution, flip the filters
-    if flipFilter and dW is 0:
+    if flipFilter is True and dW is False:
 #        filters = np.rot90(filters, k = 2, axes = (-1, -2))
         # For NumPy version < 1.12
         filters = np.rot90(filters.transpose((2, 3, 0, 1)), k = 2).transpose((2, 3, 0, 1))
     
-    if dW is 0:
+    # Parallel convolution for forward propagation
+    if dW is False and parallel is True:
         post_layer = np.zeros((numFilters, h, w))
-        # Do convolution
-        for i in xrange(h):
+        
+        # Reset number of threads if greater than height of input activation
+        if numThreads > h:
+            numThreads = h
+            
+        # Initialize chunks for each thread
+        chunk_size = int(np.ceil(h/numThreads))
+        i_list = np.linspace(0, h-1, num=h)
+        i_list = i_list.astype(int)
+        i_chunks = [None]*numThreads
+        
+        for p in xrange(numThreads):
+            if p != numThreads - 1:
+                i_chunks[p] = i_list[p*chunk_size:(p+1)*chunk_size]
+            else:
+                i_chunks[p] = i_list[p*chunk_size:h]
+        
+        # Process each chunk in parallel through the para_conv Numba function
+        threads = [None]*numThreads
+        for p in xrange(numThreads):
+            chunk_size_new = len(i_chunks[p])
+            thread = threading.Thread(target = para_conv, args = (post_layer, chunk_size_new, i_chunks[p], filters, pre_layer, stride, r, c, numFilters, w))
+            threads[p] = thread
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    
+    # Parallel convolution for backpropating error wrt weights
+    elif dW is True and parallel is True:
+        post_layer = np.zeros((numFilters, d, (h - r + 2*zeroPad)//stride + 1, (w - c + 2*zeroPad)//stride + 1))
+        
+        # Reset number of threads if greater than height of input activation
+        if numThreads > post_layer.shape[2]:
+            numThreads = post_layer.shape[2]
+        
+        # Initialize chunks for each thread
+        chunk_size = int(np.ceil(post_layer.shape[2]/numThreads))
+        i_list = np.linspace(0, post_layer.shape[2] - 1, num = post_layer.shape[2])
+        i_list = i_list.astype(int)
+        i_chunks = [None]*numThreads
+        
+        for p in xrange(numThreads):
+            if p != numThreads - 1:
+                i_chunks[p] = i_list[p*chunk_size:(p+1)*chunk_size]
+            else:
+                i_chunks[p] = i_list[p*chunk_size:post_layer.shape[2]]
+        
+        # Process each chunk in parallel through the para_conv_v2 Numba function
+        threads = [None]*numThreads
+        for p in xrange(numThreads):
+            chunk_size_new = len(i_chunks[p])
+            thread = threading.Thread(target = para_conv_v2, args = (post_layer, chunk_size_new, i_chunks[p], filters, pre_layer, stride, r, c, d, numFilters))
+            threads[p] = thread
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    
+    # Nonparallel convolution for forward propagation
+    elif dW is False and parallel is False:
+        post_layer = np.zeros((numFilters, h, w))
+        single_conv(post_layer, filters, pre_layer, h, w, numFilters, stride, r, c)
+    
+    # Nonparallel convolution for backpropating error wrt weights
+    elif dW is True and parallel is False:
+        h = (h - r + 2*zeroPad)//stride + 1
+        w = (w - c + 2*zeroPad)//stride + 1
+        post_layer = np.zeros((numFilters, d, h, w))
+        single_conv_v2(post_layer, filters, pre_layer, d, h, w, numFilters, stride, r, c)
+        
+    return post_layer
+
+@jit(nopython = True, nogil = True)
+def para_conv(post_layer, chunk_size, i_list, filters, pre_layer, stride, r, c, numFilters, w):
+    '''
+    processed by one block
+    '''
+    for i in i_list:
+        for j in xrange(w):
+            for k in xrange(numFilters):
+                # Multiply element-wise
+                temp_dot_product = np.multiply(filters[k,:,:,:], pre_layer[:, i*stride:i*stride + r, j*stride:j*stride + c])
+                    
+                # Sum up element-wise multiplication to complete dot product
+                post_layer[k, i, j] = np.sum(temp_dot_product)
+                
+@jit(nopython = True, nogil = True)
+def para_conv_v2(post_layer, chunk_size, i_list, filters, pre_layer, stride, r, c, d, numFilters):
+    '''
+    processed by one block
+    '''
+    for i in i_list:
+        for j in xrange(post_layer.shape[3]):
+            for k in xrange(d):
+                for p in xrange(numFilters):
+                    # Multiply element-wise
+                    temp_dot_product = np.multiply(filters[p,:,:], pre_layer[k, i*stride:i*stride + r, j*stride:j*stride + c])
+                    
+                    # Sum up element-wise multiplication to complete dot product
+                    post_layer[p, k, i, j] = np.sum(temp_dot_product)
+
+# @jit(nopython = True, nogil = True)
+# def para_conv(post_layer, chunk_size, i_list, j_list, k_list, filters, pre_layer, stride, r, c):
+#     '''
+#     processed by one block
+#     '''
+#     for i in xrange(chunk_size):
+#         temp_dot_product = np.multiply(filters[k_list[i],:,:,:], pre_layer[:, i_list[i]*stride:i_list[i]*stride + r, j_list[i]*stride:j_list[i]*stride + c])
+#         # Sum up element-wise multiplication to complete dot product
+#         post_layer[k_list[i], i_list[i], j_list[i]] = np.sum(temp_dot_product)
+
+@jit(nopython = True, nogil = True)
+def single_conv(post_layer, filters, pre_layer, h, w, numFilters, stride, r, c):
+    for i in xrange(h):
             for j in xrange(w):
                 for k in xrange(numFilters):
                     # Multiply element-wise
@@ -366,16 +479,18 @@ def conv_layer(pre_layer, filters, stride, zeroPad, flipFilter = 1, dW = 0):
                     
                     # Sum up element-wise multiplication to complete dot product
                     post_layer[k, i, j] = np.sum(temp_dot_product)
-    else:
-        post_layer = np.zeros((numFilters, d, (h - r + 2*zeroPad)/stride + 1, (w - c + 2*zeroPad)/stride + 1))
-        for i in xrange(post_layer.shape[2]):
-            for j in xrange(post_layer.shape[3]):
-                for k in xrange(d):
-                    for p in xrange(numFilters):
-                        temp_dot_product = np.multiply(filters[p,:,:], pre_layer[k, i*stride:i*stride + r, j*stride:j*stride + c])
-                        post_layer[p, k, i, j] = np.sum(temp_dot_product)
-    
-    return post_layer
+                    
+@jit(nopython = True, nogil = True)
+def single_conv_v2(post_layer, filters, pre_layer, d, h, w, numFilters, stride, r, c):
+    for i in xrange(h):
+        for j in xrange(w):
+            for k in xrange(d):
+                for p in xrange(numFilters):
+                    # Multiply element-wise
+                    temp_dot_product = np.multiply(filters[p,:,:], pre_layer[k, i*stride:i*stride + r, j*stride:j*stride + c])
+                    
+                    # Sum up element-wise multiplication to complete dot product
+                    post_layer[p, k, i, j] = np.sum(temp_dot_product)
 
 def softmax(z):
     """Compute softmax values of each value in a 1 dimensional vector z."""
@@ -383,7 +498,6 @@ def softmax(z):
     # Subtract the max for numerical stability
     e_z = np.exp(z - np.max(z))
     return e_z / np.sum(e_z)
-
 # Some test code
 #train = unpickle('data_batch_1')
 #trainData = train['data'].reshape((10000, 3, 32, 32))

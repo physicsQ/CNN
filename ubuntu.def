@@ -1,0 +1,19 @@
+BootStrap: debootstrap
+OSVersion: xenial
+MirrorURL: http://us.archive.ubuntu.com/ubuntu/
+
+%runscript
+    echo "This is what happens when you run the container..."
+
+%post
+    echo "Hello from inside the container"
+	
+	# Add universe repo to apt sources and install some packages
+    sed -i 's/$/ universe/' /etc/apt/sources.list
+    apt update
+    apt -y --allow-unauthenticated install vim build-essential wget gfortran bison libibverbs-dev libibmad-dev libibumad-dev librdmacm-dev libmlx5-dev libmlx4-dev python python-pip git
+	
+	# Install Python packages. Note that Numba version 0.33 is compatible only with Numpy versions 1.7 to 1.11
+	pip install --upgrade pip
+	pip install 'numpy==1.11.0'
+	pip install numba

@@ -9,7 +9,7 @@
 5. ~~Stochastic gradient descent for weight updates~~
 
 ### Things to parallelize
-1. The loops in conv_layer
+1. ~~The loops in conv_layer~~
 
 #### Optional
 2. The loop through samples in the minibatch in SGD
